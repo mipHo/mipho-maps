@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>maps-mipho</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+  <link rel="stylesheet" href="/src/style.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <div id="toolbar">
+      <button id="btn-undo" disabled>Undo</button>
+      <button id="btn-clear" disabled>Clear</button>
+      <div id="export-group">
+        <button id="btn-export" disabled>Export</button>
+        <div id="export-menu" class="hidden">
+          <button id="btn-gpx">GPX</button>
+          <button id="btn-kml">KML</button>
+        </div>
+      </div>
+    </div>
+    <div id="map"></div>
+    <div id="stats">
+      <span id="stat-distance">0.0 km</span>
+      <span id="stat-gain">+0m</span>
+      <span id="stat-loss">-0m</span>
+    </div>
+    <div id="profile-container">
+      <div id="profile-toggle">Elevation Profile</div>
+      <canvas id="profile-canvas"></canvas>
+    </div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

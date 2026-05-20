@@ -1,0 +1,150 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  height: 100%;
+  width: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+}
+
+#toolbar {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 1000;
+  display: flex;
+  gap: 6px;
+}
+
+#toolbar button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px 14px;
+  border: none;
+  border-radius: 8px;
+  background: #fff;
+  color: #333;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#toolbar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#toolbar button:active:not(:disabled) {
+  background: #e0e0e0;
+}
+
+#export-group {
+  position: relative;
+}
+
+#export-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+
+#export-menu button {
+  box-shadow: none;
+  border-radius: 0;
+  width: 100%;
+}
+
+.hidden {
+  display: none !important;
+}
+
+#map {
+  flex: 1 1 0%;
+  min-height: 0;
+  position: relative;
+  z-index: 0;
+}
+
+.leaflet-routing-container {
+  display: none !important;
+}
+
+#stats {
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  padding: 10px;
+  background: #1a1a2e;
+  color: #eee;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+#stat-gain {
+  color: #4caf50;
+}
+
+#stat-loss {
+  color: #f44336;
+}
+
+#profile-container {
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+  background: #1a1a2e;
+  transition: height 0.3s ease;
+  overflow: hidden;
+}
+
+#profile-container.collapsed #profile-canvas {
+  display: none;
+}
+
+#profile-toggle {
+  text-align: center;
+  padding: 8px;
+  color: #aaa;
+  font-size: 13px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+#profile-canvas {
+  width: 100%;
+  height: 150px;
+  display: block;
+}
+
+.waypoint-remove-btn {
+  background: #f44336;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}

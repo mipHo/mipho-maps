@@ -1,223 +1,155 @@
 import L from 'leaflet';
+import type { LatLngLike } from './geo';
 import { fetchRoute } from './osrm';
 
+export type LegMode = 'snapped' | 'freehand';
+
 export interface RouteResult {
-  coordinates: any[];
+  coordinates: LatLngLike[];
+  /** Metres. */
   totalDistance: number;
 }
 
-type RouteCallback = (result: RouteResult | null) => void;
+export type RouteListener = (result: RouteResult | null) => void;
 
-interface Segment {
-  type: 'snapped' | 'freehand';
-  waypoints: any[];
-  coordinates: any[];
+/** The path between two consecutive waypoints. Computed once, when the leg is created. */
+interface Leg {
+  mode: LegMode;
+  status: 'pending' | 'ok' | 'error';
+  coords: LatLngLike[];
+  /** Metres. */
   distance: number;
-  polyline: any | null;
+  polyline: L.Polyline | null;
 }
 
-let segments: Segment[] = [];
-let markers: any[] = [];
-let freehandMode = false;
-let map: any;
-let routeCallback: RouteCallback;
+const LEG_STYLES: Record<LegMode, L.PolylineOptions> = {
+  snapped: { color: '#2196f3', weight: 5, opacity: 0.8 },
+  freehand: { color: '#ff9800', weight: 5, opacity: 0.8, dashArray: '10, 10' },
+};
 
-export function setFreehandMode(on: boolean): void {
-  freehandMode = on;
-}
+const MARKER_COLORS = { start: '#4caf50', end: '#f44336', via: '#2196f3' };
 
-export function isFreehandMode(): boolean {
-  return freehandMode;
-}
+/**
+ * Builds a walking route from clicked waypoints.
+ * Invariant: legs.length === max(0, waypoints.length - 1), and legs[i] joins waypoints[i] → waypoints[i + 1].
+ */
+export class RouteBuilder {
+  /** Mode used for the next leg; existing legs keep theirs. */
+  mode: LegMode = 'snapped';
 
-function getAllWaypoints(): any[] {
-  if (segments.length === 0) return [];
-  const all = [...segments[0].waypoints];
-  for (let i = 1; i < segments.length; i++) {
-    all.push(...segments[i].waypoints.slice(1));
-  }
-  return all;
-}
+  private waypoints: L.LatLng[] = [];
+  private legs: Leg[] = [];
+  private readonly markers: L.LayerGroup;
 
-export function getWaypointCount(_control: any): number {
-  return getAllWaypoints().length;
-}
-
-function refreshMarkers(): void {
-  for (const m of markers) map.removeLayer(m);
-  markers = [];
-
-  const allWps = getAllWaypoints();
-  for (let i = 0; i < allWps.length; i++) {
-    const isStart = i === 0;
-    const isEnd = i === allWps.length - 1 && allWps.length > 1;
-    const m = L.marker(allWps[i], {
-      icon: L.divIcon({
-        className: '',
-        html: `<div style="
-          width: 16px; height: 16px; border-radius: 50%;
-          background: ${isStart ? '#4caf50' : isEnd ? '#f44336' : '#2196f3'};
-          border: 3px solid #fff;
-          box-shadow: 0 1px 4px rgba(0,0,0,0.4);
-        "></div>`,
-        iconSize: [16, 16],
-        iconAnchor: [8, 8],
-      }),
-    }).addTo(map);
-    markers.push(m);
-  }
-}
-
-function emitMergedRoute(): void {
-  const allCoords: any[] = [];
-  let totalDist = 0;
-
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    if (seg.coordinates.length === 0) continue;
-    const coords = i === 0 ? seg.coordinates : seg.coordinates.slice(1);
-    allCoords.push(...coords);
-    totalDist += seg.distance;
+  constructor(
+    private readonly map: L.Map,
+    private readonly onChange: RouteListener,
+  ) {
+    this.markers = L.layerGroup().addTo(map);
   }
 
-  if (allCoords.length >= 2) {
-    routeCallback({ coordinates: allCoords, totalDistance: totalDist });
-  } else {
-    routeCallback(null);
-  }
-}
-
-function routeSnappedSegment(segment: Segment): void {
-  if (segment.waypoints.length < 2) {
-    segment.coordinates = [];
-    segment.distance = 0;
-    if (segment.polyline) {
-      map.removeLayer(segment.polyline);
-      segment.polyline = null;
-    }
-    emitMergedRoute();
-    return;
+  get waypointCount(): number {
+    return this.waypoints.length;
   }
 
-  // Stale/out-of-order replies are still possible here; fixed in step 4.
-  fetchRoute(segment.waypoints).then(
-    (route) => {
-      segment.coordinates = route.coords;
-      segment.distance = route.distance;
+  add(latlng: LatLngLike): void {
+    const point = L.latLng(latlng.lat, latlng.lng);
+    const prev = this.waypoints[this.waypoints.length - 1];
+    this.waypoints.push(point);
 
-      if (segment.polyline) {
-        segment.polyline.setLatLngs(segment.coordinates);
+    if (prev) {
+      const leg: Leg = { mode: this.mode, status: 'pending', coords: [], distance: 0, polyline: null };
+      this.legs.push(leg);
+      if (leg.mode === 'freehand') {
+        this.settleLeg(leg, [prev, point], prev.distanceTo(point));
       } else {
-        segment.polyline = L.polyline(segment.coordinates, {
-          color: '#2196f3', weight: 5, opacity: 0.8,
-        }).addTo(map);
+        this.routeLeg(leg, prev, point);
       }
-
-      emitMergedRoute();
-    },
-    (err) => {
-      console.error('[maps-mipho] routing error', err);
-      segment.coordinates = [];
-      segment.distance = 0;
-      if (segment.polyline) {
-        map.removeLayer(segment.polyline);
-        segment.polyline = null;
-      }
-      emitMergedRoute();
-    },
-  );
-}
-
-function updateFreehandSegment(segment: Segment): void {
-  segment.coordinates = segment.waypoints.map((wp: any) => L.latLng(wp.lat, wp.lng));
-
-  segment.distance = 0;
-  for (let i = 1; i < segment.waypoints.length; i++) {
-    segment.distance += segment.waypoints[i - 1].distanceTo(segment.waypoints[i]);
-  }
-
-  if (segment.polyline) {
-    segment.polyline.setLatLngs(segment.coordinates);
-  } else if (segment.coordinates.length >= 2) {
-    segment.polyline = L.polyline(segment.coordinates, {
-      color: '#ff9800', weight: 5, opacity: 0.8, dashArray: '10, 10',
-    }).addTo(map);
-  }
-
-  emitMergedRoute();
-}
-
-export function createRoutingControl(mapInstance: any, onRoute: RouteCallback): any {
-  map = mapInstance;
-  routeCallback = onRoute;
-  return null;
-}
-
-export function addWaypoint(_control: any, latlng: any): void {
-  const point = L.latLng(latlng.lat, latlng.lng);
-  const currentType = freehandMode ? 'freehand' : 'snapped';
-  const active = segments.length > 0 ? segments[segments.length - 1] : null;
-
-  if (!active || active.type !== currentType) {
-    const bridgePoint = active && active.waypoints.length > 0
-      ? active.waypoints[active.waypoints.length - 1]
-      : null;
-
-    const newSeg: Segment = {
-      type: currentType,
-      waypoints: bridgePoint ? [bridgePoint, point] : [point],
-      coordinates: [],
-      distance: 0,
-      polyline: null,
-    };
-    segments.push(newSeg);
-
-    if (currentType === 'snapped') {
-      routeSnappedSegment(newSeg);
-    } else {
-      updateFreehandSegment(newSeg);
     }
-  } else {
-    active.waypoints.push(point);
-    if (currentType === 'snapped') {
-      routeSnappedSegment(active);
-    } else {
-      updateFreehandSegment(active);
+
+    this.refreshMarkers();
+    this.emit();
+  }
+
+  undo(): void {
+    if (this.waypoints.length === 0) return;
+    this.waypoints.pop();
+    const leg = this.legs.pop();
+    if (leg) this.removeLegLayer(leg);
+    this.refreshMarkers();
+    this.emit();
+  }
+
+  clear(): void {
+    for (const leg of this.legs) this.removeLegLayer(leg);
+    this.legs = [];
+    this.waypoints = [];
+    this.markers.clearLayers();
+    this.emit();
+  }
+
+  private routeLeg(leg: Leg, from: L.LatLng, to: L.LatLng): void {
+    // TODO(step 4): replies for legs removed by undo/clear are not ignored yet.
+    fetchRoute([from, to]).then(
+      (route) => {
+        this.settleLeg(leg, route.coords, route.distance);
+        this.emit();
+      },
+      (err) => {
+        console.error('[maps-mipho] routing error', err);
+        leg.status = 'error';
+        this.emit();
+      },
+    );
+  }
+
+  private settleLeg(leg: Leg, coords: LatLngLike[], distance: number): void {
+    leg.status = 'ok';
+    leg.coords = coords;
+    leg.distance = distance;
+    leg.polyline = L.polyline(coords, LEG_STYLES[leg.mode]).addTo(this.map);
+  }
+
+  private removeLegLayer(leg: Leg): void {
+    if (leg.polyline) {
+      this.map.removeLayer(leg.polyline);
+      leg.polyline = null;
     }
   }
 
-  refreshMarkers();
-  console.log('[maps-mipho] addWaypoint, segments:', segments.length, 'total waypoints:', getWaypointCount(null));
-}
+  private refreshMarkers(): void {
+    this.markers.clearLayers();
+    const n = this.waypoints.length;
+    this.waypoints.forEach((wp, i) => {
+      const color = i === 0 ? MARKER_COLORS.start : i === n - 1 ? MARKER_COLORS.end : MARKER_COLORS.via;
+      L.marker(wp, {
+        icon: L.divIcon({
+          className: '',
+          html: `<div style="
+            width: 16px; height: 16px; border-radius: 50%;
+            background: ${color};
+            border: 3px solid #fff;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+          "></div>`,
+          iconSize: [16, 16],
+          iconAnchor: [8, 8],
+        }),
+      }).addTo(this.markers);
+    });
+  }
 
-export function undoWaypoint(_control: any): void {
-  if (segments.length === 0) return;
+  /** Concatenates finished legs (pending/failed ones are skipped, as before) and notifies the listener. */
+  private emit(): void {
+    const coordinates: LatLngLike[] = [];
+    let totalDistance = 0;
 
-  const active = segments[segments.length - 1];
-  const isBridged = segments.length > 1;
-  const minWps = isBridged ? 2 : 1;
-
-  if (active.waypoints.length > minWps) {
-    active.waypoints.pop();
-    if (active.type === 'snapped') {
-      routeSnappedSegment(active);
-    } else {
-      updateFreehandSegment(active);
+    for (const leg of this.legs) {
+      if (leg.coords.length === 0) continue;
+      // Each leg starts where the previous one ended; drop the duplicate point.
+      coordinates.push(...(coordinates.length === 0 ? leg.coords : leg.coords.slice(1)));
+      totalDistance += leg.distance;
     }
-  } else {
-    if (active.polyline) map.removeLayer(active.polyline);
-    segments.pop();
-    emitMergedRoute();
-  }
 
-  refreshMarkers();
-}
-
-export function clearWaypoints(_control: any): void {
-  for (const seg of segments) {
-    if (seg.polyline) map.removeLayer(seg.polyline);
+    this.onChange(coordinates.length >= 2 ? { coordinates, totalDistance } : null);
   }
-  segments = [];
-  for (const m of markers) map.removeLayer(m);
-  markers = [];
 }

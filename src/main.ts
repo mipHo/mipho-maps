@@ -1,6 +1,6 @@
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { createRoutingControl, addWaypoint, undoWaypoint, clearWaypoints, getWaypointCount, setFreehandMode, isFreehandMode, type RouteResult } from './router';
+import { RouteBuilder, type RouteResult } from './router';
 import { fetchElevation, interpolateElevation, type ElevationPoint, type ElevationResult } from './elevation';
 import { renderProfile, clearProfile } from './profile';
 import { generateGPX, generateKML, downloadFile } from './export';
@@ -33,7 +33,7 @@ const profileToggle = document.getElementById('profile-toggle')!;
 const profileContainer = document.getElementById('profile-container')!;
 
 function updateButtons(): void {
-  const count = getWaypointCount(control);
+  const count = route.waypointCount;
   btnUndo.disabled = count === 0;
   btnClear.disabled = count === 0;
   btnExport.disabled = currentRoute === null;
@@ -79,30 +79,27 @@ async function onRouteFound(result: RouteResult | null): Promise<void> {
   }, 1500);
 }
 
-const control = createRoutingControl(map, onRouteFound);
+const route = new RouteBuilder(map, onRouteFound);
 
 // Map tap to add waypoint
 map.on('click', (e: L.LeafletMouseEvent) => {
-  console.log('[maps-mipho] click', e.latlng);
-  addWaypoint(control, e.latlng);
+  route.add(e.latlng);
   updateButtons();
 });
 
 // Toolbar buttons
 btnFreehand.addEventListener('click', () => {
-  setFreehandMode(!isFreehandMode());
-  btnFreehand.classList.toggle('active');
+  route.mode = route.mode === 'freehand' ? 'snapped' : 'freehand';
+  btnFreehand.classList.toggle('active', route.mode === 'freehand');
 });
 
 btnUndo.addEventListener('click', () => {
-  undoWaypoint(control);
-  if (getWaypointCount(control) < 2) resetStats();
+  route.undo();
   updateButtons();
 });
 
 btnClear.addEventListener('click', () => {
-  clearWaypoints(control);
-  resetStats();
+  route.clear();
   updateButtons();
 });
 

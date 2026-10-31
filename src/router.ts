@@ -1,7 +1,5 @@
-// leaflet-setup must run first: leaflet-routing-machine attaches itself to window.L on load.
-// Both go away in step 2, when OSRM is called directly.
-import L from './leaflet-setup';
-import 'leaflet-routing-machine';
+import L from 'leaflet';
+import { fetchRoute } from './osrm';
 
 export interface RouteResult {
   coordinates: any[];
@@ -23,7 +21,6 @@ let markers: any[] = [];
 let freehandMode = false;
 let map: any;
 let routeCallback: RouteCallback;
-let osrmRouter: any;
 
 export function setFreehandMode(on: boolean): void {
   freehandMode = on;
@@ -102,9 +99,23 @@ function routeSnappedSegment(segment: Segment): void {
     return;
   }
 
-  const wps = segment.waypoints.map((wp: any) => ({ latLng: wp }));
-  osrmRouter.route(wps, (err: any, routes: any) => {
-    if (err || !routes || routes.length === 0) {
+  // Stale/out-of-order replies are still possible here; fixed in step 4.
+  fetchRoute(segment.waypoints).then(
+    (route) => {
+      segment.coordinates = route.coords;
+      segment.distance = route.distance;
+
+      if (segment.polyline) {
+        segment.polyline.setLatLngs(segment.coordinates);
+      } else {
+        segment.polyline = L.polyline(segment.coordinates, {
+          color: '#2196f3', weight: 5, opacity: 0.8,
+        }).addTo(map);
+      }
+
+      emitMergedRoute();
+    },
+    (err) => {
       console.error('[maps-mipho] routing error', err);
       segment.coordinates = [];
       segment.distance = 0;
@@ -113,24 +124,8 @@ function routeSnappedSegment(segment: Segment): void {
         segment.polyline = null;
       }
       emitMergedRoute();
-      return;
-    }
-
-    const route = routes[0];
-    segment.coordinates = route.coordinates;
-    segment.distance = route.summary.totalDistance;
-
-    if (segment.polyline) {
-      segment.polyline.setLatLngs(segment.coordinates);
-    } else {
-      segment.polyline = L.polyline(segment.coordinates, {
-        color: '#2196f3', weight: 5, opacity: 0.8,
-      }).addTo(map);
-    }
-
-    console.log('[maps-mipho] snapped route found', route.summary);
-    emitMergedRoute();
-  });
+    },
+  );
 }
 
 function updateFreehandSegment(segment: Segment): void {
@@ -155,10 +150,6 @@ function updateFreehandSegment(segment: Segment): void {
 export function createRoutingControl(mapInstance: any, onRoute: RouteCallback): any {
   map = mapInstance;
   routeCallback = onRoute;
-  osrmRouter = L.Routing.osrmv1({
-    serviceUrl: 'https://routing.openstreetmap.de/routed-foot/route/v1',
-    profile: 'foot',
-  });
   return null;
 }
 

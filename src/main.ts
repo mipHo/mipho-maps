@@ -1,7 +1,7 @@
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { RouteBuilder, type RouteResult } from './router';
-import { fetchElevation, interpolateElevation, type ElevationResult } from './elevation';
+import { fetchElevation, interpolateElevation, type ElevationPoint, type ElevationResult } from './elevation';
 import { renderProfile, clearProfile } from './profile';
 import { generateGPX, generateKML, downloadFile } from './export';
 
@@ -14,9 +14,15 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 
 L.control.zoom({ position: 'topright' }).addTo(map);
 
+const ELEVATION_DEBOUNCE_MS = 500;
+
 let currentRoute: RouteResult | null = null;
+/** Elevation for currentRoute; null while loading, after a failure, or when there's no route. */
 let currentElevation: ElevationResult | null = null;
+/** Last profile drawn; kept (dimmed) while a newer one loads so the panel doesn't jump. */
+let shownProfile: ElevationPoint[] = [];
 let elevationTimeout: ReturnType<typeof setTimeout> | null = null;
+let elevationAbort: AbortController | null = null;
 let pendingLegs = 0;
 
 const btnFreehand = document.getElementById('btn-freehand') as HTMLButtonElement;
@@ -32,6 +38,7 @@ const statLoss = document.getElementById('stat-loss')!;
 const profileCanvas = document.getElementById('profile-canvas') as HTMLCanvasElement;
 const profileToggle = document.getElementById('profile-toggle')!;
 const profileContainer = document.getElementById('profile-container')!;
+const profileStatus = document.getElementById('profile-status')!;
 
 function updateButtons(): void {
   const count = route.waypointCount;
@@ -40,17 +47,62 @@ function updateButtons(): void {
   btnExport.disabled = currentRoute === null || pendingLegs > 0;
 }
 
-function updateStats(distance: number, gain: number, loss: number): void {
+/** gain/loss null = not known yet (shown as "…"). */
+function updateStats(distance: number, gain: number | null, loss: number | null): void {
   statDistance.textContent = `${(distance / 1000).toFixed(1)} km`;
-  statGain.textContent = `+${Math.round(gain)}m`;
-  statLoss.textContent = `-${Math.round(loss)}m`;
+  statGain.textContent = gain === null ? '+…' : `+${Math.round(gain)}m`;
+  statLoss.textContent = loss === null ? '-…' : `-${Math.round(loss)}m`;
+  statGain.classList.toggle('loading', gain === null);
+  statLoss.classList.toggle('loading', loss === null);
+}
+
+type ElevationStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+function setElevationStatus(status: ElevationStatus): void {
+  profileContainer.classList.toggle('loading', status === 'loading');
+  profileContainer.classList.toggle('error', status === 'error');
+  profileStatus.classList.toggle('hidden', status !== 'loading' && status !== 'error');
+  profileStatus.textContent =
+    status === 'loading' ? 'Loading elevation…' : status === 'error' ? 'Elevation unavailable' : '';
+}
+
+/** Drops any scheduled or in-flight elevation request; its result will never be applied. */
+function cancelElevation(): void {
+  if (elevationTimeout) clearTimeout(elevationTimeout);
+  elevationTimeout = null;
+  elevationAbort?.abort();
+  elevationAbort = null;
 }
 
 function resetStats(): void {
+  cancelElevation();
   updateStats(0, 0, 0);
   currentRoute = null;
   currentElevation = null;
+  shownProfile = [];
   clearProfile(profileCanvas);
+  setElevationStatus('idle');
+}
+
+async function loadElevation(result: RouteResult): Promise<void> {
+  const abort = new AbortController();
+  elevationAbort = abort;
+  try {
+    const elev = await fetchElevation(result.coordinates, { signal: abort.signal });
+    if (abort.signal.aborted) return; // route changed while we were waiting
+    elevationAbort = null;
+    currentElevation = elev;
+    shownProfile = elev.points;
+    updateStats(result.totalDistance, elev.gain, elev.loss);
+    renderProfile(profileCanvas, shownProfile);
+    setElevationStatus('ready');
+  } catch (err) {
+    if (abort.signal.aborted) return;
+    elevationAbort = null;
+    console.warn('[maps-mipho] elevation fetch failed', err);
+    updateStats(result.totalDistance, 0, 0);
+    setElevationStatus('error');
+  }
 }
 
 async function onRouteFound(result: RouteResult | null, pending: number): Promise<void> {
@@ -61,26 +113,20 @@ async function onRouteFound(result: RouteResult | null, pending: number): Promis
     return;
   }
 
+  // Any elevation we have belongs to the previous route shape.
+  cancelElevation();
   currentRoute = result;
-  updateStats(result.totalDistance, currentElevation?.gain ?? 0, currentElevation?.loss ?? 0);
+  currentElevation = null;
+  updateStats(result.totalDistance, null, null);
+  setElevationStatus('loading');
   updateButtons();
 
-  // Only fetch elevation for a complete route; a newer change cancels the scheduled fetch.
-  if (elevationTimeout) clearTimeout(elevationTimeout);
-  elevationTimeout = null;
+  // Only fetch elevation for a complete route, debounced so rapid edits make one request.
   if (pending > 0) return;
-
-  // Debounce elevation fetch
-  elevationTimeout = setTimeout(async () => {
-    try {
-      const elev = await fetchElevation(result.coordinates);
-      currentElevation = elev;
-      updateStats(result.totalDistance, elev.gain, elev.loss);
-      renderProfile(profileCanvas, elev.points);
-    } catch {
-      console.warn('Failed to fetch elevation data');
-    }
-  }, 1500);
+  elevationTimeout = setTimeout(() => {
+    elevationTimeout = null;
+    void loadElevation(result);
+  }, ELEVATION_DEBOUNCE_MS);
 }
 
 const route = new RouteBuilder(map, onRouteFound);
@@ -138,11 +184,12 @@ btnKml.addEventListener('click', () => exportRoute('kml'));
 // Profile collapse toggle
 profileToggle.addEventListener('click', () => {
   profileContainer.classList.toggle('collapsed');
+  // A profile that arrived while collapsed was drawn at 0×0; redraw it at the real size.
+  redrawProfile();
 });
 
-// Redraw profile on resize
-window.addEventListener('resize', () => {
-  if (currentElevation) {
-    renderProfile(profileCanvas, currentElevation.points);
-  }
-});
+function redrawProfile(): void {
+  if (shownProfile.length > 0) renderProfile(profileCanvas, shownProfile);
+}
+
+window.addEventListener('resize', redrawProfile);

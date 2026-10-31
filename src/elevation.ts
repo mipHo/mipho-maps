@@ -1,9 +1,14 @@
-import type { LatLngLike } from './geo';
+import { cumulativeDistances, lowerIndex, pointAtDistance, type LatLngLike } from './geo';
+
+/** Open-Meteo elevation API (Copernicus DEM, ~90 m). Max 100 coordinates per request. */
+const ELEVATION_URL = 'https://api.open-meteo.com/v1/elevation';
+const BATCH_SIZE = 100;
 
 export interface ElevationPoint {
   lat: number;
   lng: number;
   elevation: number;
+  /** Metres along the route. */
   distance: number;
 }
 
@@ -13,73 +18,35 @@ export interface ElevationResult {
   loss: number;
 }
 
-function haversineDistance(a: LatLngLike, b: LatLngLike): number {
-  const R = 6371000;
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const dLat = toRad(b.lat - a.lat);
-  const dLng = toRad(b.lng - a.lng);
-  const sinLat = Math.sin(dLat / 2);
-  const sinLng = Math.sin(dLng / 2);
-  const h = sinLat * sinLat + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * sinLng * sinLng;
-  return 2 * R * Math.asin(Math.sqrt(h));
-}
-
+/** Up to `maxPoints` points evenly spaced by distance along the path, including both ends. */
 function downsample(coords: LatLngLike[], maxPoints: number): { point: LatLngLike; distance: number }[] {
   if (coords.length === 0) return [];
 
-  const distances: number[] = [0];
-  for (let i = 1; i < coords.length; i++) {
-    distances.push(distances[i - 1] + haversineDistance(coords[i - 1], coords[i]));
-  }
-
+  const distances = cumulativeDistances(coords);
   const totalDist = distances[distances.length - 1];
   if (totalDist === 0) return [{ point: coords[0], distance: 0 }];
 
+  // totalDist > 0 implies at least 2 coords, so count >= 2.
   const count = Math.min(maxPoints, coords.length);
-  const interval = totalDist / (count - 1);
-  const sampled: { point: LatLngLike; distance: number }[] = [];
-
-  let coordIdx = 0;
-  for (let i = 0; i < count; i++) {
-    const targetDist = i * interval;
-    while (coordIdx < distances.length - 1 && distances[coordIdx + 1] < targetDist) {
-      coordIdx++;
-    }
-    if (coordIdx >= coords.length - 1) {
-      sampled.push({ point: coords[coords.length - 1], distance: totalDist });
-    } else {
-      const segFraction =
-        distances[coordIdx + 1] === distances[coordIdx]
-          ? 0
-          : (targetDist - distances[coordIdx]) / (distances[coordIdx + 1] - distances[coordIdx]);
-      const lat = coords[coordIdx].lat + segFraction * (coords[coordIdx + 1].lat - coords[coordIdx].lat);
-      const lng = coords[coordIdx].lng + segFraction * (coords[coordIdx + 1].lng - coords[coordIdx].lng);
-      sampled.push({ point: { lat, lng }, distance: targetDist });
-    }
-  }
-
-  return sampled;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-async function fetchBatch(points: { point: LatLngLike; distance: number }[]): Promise<(number | null)[]> {
-  const locations = points.map((p) => ({
-    latitude: p.point.lat,
-    longitude: p.point.lng,
-  }));
-  const res = await fetch('https://api.open-elevation.com/api/v1/lookup', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ locations }),
+  return Array.from({ length: count }, (_, i) => {
+    const distance = i === count - 1 ? totalDist : (totalDist * i) / (count - 1);
+    return { point: pointAtDistance(coords, distances, distance), distance };
   });
+}
 
-  if (!res.ok) throw new Error(`Elevation API error: ${res.status}`);
+async function fetchBatch(points: LatLngLike[], signal?: AbortSignal): Promise<(number | null)[]> {
+  const latitude = points.map((p) => p.lat.toFixed(5)).join(',');
+  const longitude = points.map((p) => p.lng.toFixed(5)).join(',');
+  const res = await fetch(`${ELEVATION_URL}?latitude=${latitude}&longitude=${longitude}`, { signal });
 
-  const data = await res.json();
-  return data.results.map((r: { elevation: number | null }) => r.elevation);
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !Array.isArray(data?.elevation)) {
+    throw new Error(`Elevation API error: ${data?.reason ?? `HTTP ${res.status}`}`);
+  }
+  if (data.elevation.length !== points.length) {
+    throw new Error(`Elevation API returned ${data.elevation.length} values for ${points.length} points`);
+  }
+  return data.elevation.map((e: unknown) => (typeof e === 'number' && Number.isFinite(e) ? e : null));
 }
 
 function computeGainLoss(elevations: number[], threshold = 2): { gain: number; loss: number } {
@@ -93,19 +60,18 @@ function computeGainLoss(elevations: number[], threshold = 2): { gain: number; l
   return { gain, loss };
 }
 
-export async function fetchElevation(coords: LatLngLike[], maxSamples = 200): Promise<ElevationResult> {
+export async function fetchElevation(
+  coords: LatLngLike[],
+  { maxSamples = 200, signal }: { maxSamples?: number; signal?: AbortSignal } = {},
+): Promise<ElevationResult> {
   const sampled = downsample(coords, maxSamples);
   if (sampled.length === 0) return { points: [], gain: 0, loss: 0 };
 
-  const batchSize = 100;
-  const elevations: (number | null)[] = [];
-
-  for (let i = 0; i < sampled.length; i += batchSize) {
-    if (i > 0) await delay(1100);
-    const batch = sampled.slice(i, i + batchSize);
-    const results = await fetchBatch(batch);
-    elevations.push(...results);
+  const batches: Promise<(number | null)[]>[] = [];
+  for (let i = 0; i < sampled.length; i += BATCH_SIZE) {
+    batches.push(fetchBatch(sampled.slice(i, i + BATCH_SIZE).map((s) => s.point), signal));
   }
+  const elevations = (await Promise.all(batches)).flat();
 
   const points: ElevationPoint[] = sampled.map((s, i) => ({
     lat: s.point.lat,
@@ -114,33 +80,22 @@ export async function fetchElevation(coords: LatLngLike[], maxSamples = 200): Pr
     distance: s.distance,
   }));
 
-  const validElevations = points.map((p) => p.elevation);
-  const { gain, loss } = computeGainLoss(validElevations);
-
+  const { gain, loss } = computeGainLoss(points.map((p) => p.elevation));
   return { points, gain, loss };
 }
 
-export function interpolateElevation(
-  coords: LatLngLike[],
-  profile: ElevationPoint[],
-): number[] {
+/** Elevation at `distance` metres along the route, linearly interpolated between profile samples. */
+export function elevationAtDistance(profile: ElevationPoint[], distance: number): number {
+  if (profile.length === 0) return 0;
+  const lo = lowerIndex(profile.map((p) => p.distance), distance);
+  const hi = Math.min(lo + 1, profile.length - 1);
+  const span = profile[hi].distance - profile[lo].distance;
+  if (span <= 0) return profile[lo].elevation;
+  const t = Math.min(1, Math.max(0, (distance - profile[lo].distance) / span));
+  return profile[lo].elevation + t * (profile[hi].elevation - profile[lo].elevation);
+}
+
+export function interpolateElevation(coords: LatLngLike[], profile: ElevationPoint[]): number[] {
   if (profile.length === 0) return coords.map(() => 0);
-
-  const distances: number[] = [0];
-  for (let i = 1; i < coords.length; i++) {
-    distances.push(distances[i - 1] + haversineDistance(coords[i - 1], coords[i]));
-  }
-
-  return distances.map((d) => {
-    let lo = 0;
-    let hi = profile.length - 1;
-    while (lo < hi - 1) {
-      const mid = (lo + hi) >> 1;
-      if (profile[mid].distance <= d) lo = mid;
-      else hi = mid;
-    }
-    if (profile[hi].distance === profile[lo].distance) return profile[lo].elevation;
-    const t = (d - profile[lo].distance) / (profile[hi].distance - profile[lo].distance);
-    return profile[lo].elevation + t * (profile[hi].elevation - profile[lo].elevation);
-  });
+  return cumulativeDistances(coords).map((d) => elevationAtDistance(profile, d));
 }

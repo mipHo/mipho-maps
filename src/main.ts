@@ -17,6 +17,7 @@ L.control.zoom({ position: 'topright' }).addTo(map);
 let currentRoute: RouteResult | null = null;
 let currentElevation: ElevationResult | null = null;
 let elevationTimeout: ReturnType<typeof setTimeout> | null = null;
+let pendingLegs = 0;
 
 const btnFreehand = document.getElementById('btn-freehand') as HTMLButtonElement;
 const btnUndo = document.getElementById('btn-undo') as HTMLButtonElement;
@@ -36,7 +37,7 @@ function updateButtons(): void {
   const count = route.waypointCount;
   btnUndo.disabled = count === 0;
   btnClear.disabled = count === 0;
-  btnExport.disabled = currentRoute === null;
+  btnExport.disabled = currentRoute === null || pendingLegs > 0;
 }
 
 function updateStats(distance: number, gain: number, loss: number): void {
@@ -52,8 +53,8 @@ function resetStats(): void {
   clearProfile(profileCanvas);
 }
 
-async function onRouteFound(result: RouteResult | null): Promise<void> {
-  console.log('[maps-mipho] routesfound', result);
+async function onRouteFound(result: RouteResult | null, pending: number): Promise<void> {
+  pendingLegs = pending;
   if (!result) {
     resetStats();
     updateButtons();
@@ -61,12 +62,15 @@ async function onRouteFound(result: RouteResult | null): Promise<void> {
   }
 
   currentRoute = result;
-  console.log('[maps-mipho] distance:', result.totalDistance, 'coords:', result.coordinates.length);
   updateStats(result.totalDistance, currentElevation?.gain ?? 0, currentElevation?.loss ?? 0);
   updateButtons();
 
-  // Debounce elevation fetch
+  // Only fetch elevation for a complete route; a newer change cancels the scheduled fetch.
   if (elevationTimeout) clearTimeout(elevationTimeout);
+  elevationTimeout = null;
+  if (pending > 0) return;
+
+  // Debounce elevation fetch
   elevationTimeout = setTimeout(async () => {
     try {
       const elev = await fetchElevation(result.coordinates);

@@ -10,7 +10,11 @@ export interface RouteResult {
   totalDistance: number;
 }
 
-export type RouteListener = (result: RouteResult | null) => void;
+/**
+ * Called after every change. `result` is null until at least one leg has a path.
+ * `pending` is the number of legs still waiting for OSRM; while > 0, `result` is incomplete.
+ */
+export type RouteListener = (result: RouteResult | null, pending: number) => void;
 
 /** The path between two consecutive waypoints. Computed once, when the leg is created. */
 interface Leg {
@@ -20,6 +24,8 @@ interface Leg {
   /** Metres. */
   distance: number;
   polyline: L.Polyline | null;
+  /** Set while a snapped leg's OSRM request is in flight. */
+  abort: AbortController | null;
 }
 
 const LEG_STYLES: Record<LegMode, L.PolylineOptions> = {
@@ -58,7 +64,7 @@ export class RouteBuilder {
     this.waypoints.push(point);
 
     if (prev) {
-      const leg: Leg = { mode: this.mode, status: 'pending', coords: [], distance: 0, polyline: null };
+      const leg: Leg = { mode: this.mode, status: 'pending', coords: [], distance: 0, polyline: null, abort: null };
       this.legs.push(leg);
       if (leg.mode === 'freehand') {
         this.settleLeg(leg, [prev, point], prev.distanceTo(point));
@@ -75,13 +81,13 @@ export class RouteBuilder {
     if (this.waypoints.length === 0) return;
     this.waypoints.pop();
     const leg = this.legs.pop();
-    if (leg) this.removeLegLayer(leg);
+    if (leg) this.disposeLeg(leg);
     this.refreshMarkers();
     this.emit();
   }
 
   clear(): void {
-    for (const leg of this.legs) this.removeLegLayer(leg);
+    for (const leg of this.legs) this.disposeLeg(leg);
     this.legs = [];
     this.waypoints = [];
     this.markers.clearLayers();
@@ -89,18 +95,29 @@ export class RouteBuilder {
   }
 
   private routeLeg(leg: Leg, from: L.LatLng, to: L.LatLng): void {
-    // TODO(step 4): replies for legs removed by undo/clear are not ignored yet.
-    fetchRoute([from, to]).then(
+    leg.abort = new AbortController();
+    // Replies may arrive in any order; each one writes only to its own leg, so order doesn't matter.
+    // A reply for a leg that undo/clear removed is dropped: the request was aborted, and the
+    // isLive check also catches a reply that resolved before the abort took effect.
+    fetchRoute([from, to], leg.abort.signal).then(
       (route) => {
+        if (!this.isLive(leg)) return;
+        leg.abort = null;
         this.settleLeg(leg, route.coords, route.distance);
         this.emit();
       },
       (err) => {
+        if (!this.isLive(leg)) return; // includes the AbortError from disposeLeg
+        leg.abort = null;
         console.error('[maps-mipho] routing error', err);
         leg.status = 'error';
         this.emit();
       },
     );
+  }
+
+  private isLive(leg: Leg): boolean {
+    return this.legs.includes(leg);
   }
 
   private settleLeg(leg: Leg, coords: LatLngLike[], distance: number): void {
@@ -110,7 +127,10 @@ export class RouteBuilder {
     leg.polyline = L.polyline(coords, LEG_STYLES[leg.mode]).addTo(this.map);
   }
 
-  private removeLegLayer(leg: Leg): void {
+  /** Cancels any in-flight request and removes the leg's line. Call after removing it from `legs`. */
+  private disposeLeg(leg: Leg): void {
+    leg.abort?.abort();
+    leg.abort = null;
     if (leg.polyline) {
       this.map.removeLayer(leg.polyline);
       leg.polyline = null;
@@ -142,14 +162,16 @@ export class RouteBuilder {
   private emit(): void {
     const coordinates: LatLngLike[] = [];
     let totalDistance = 0;
+    let pending = 0;
 
     for (const leg of this.legs) {
+      if (leg.status === 'pending') pending++;
       if (leg.coords.length === 0) continue;
       // Each leg starts where the previous one ended; drop the duplicate point.
       coordinates.push(...(coordinates.length === 0 ? leg.coords : leg.coords.slice(1)));
       totalDistance += leg.distance;
     }
 
-    this.onChange(coordinates.length >= 2 ? { coordinates, totalDistance } : null);
+    this.onChange(coordinates.length >= 2 ? { coordinates, totalDistance } : null, pending);
   }
 }

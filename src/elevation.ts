@@ -167,7 +167,8 @@ export function fillGaps(values: (number | null)[]): number[] {
 
 export async function fetchElevation(
   coords: LatLngLike[],
-  { maxSamples = 200, ...opts }: { maxSamples?: number } & FetchOptions = {},
+  // 100 = Open-Meteo's per-request limit, so a route change costs a single request.
+  { maxSamples = BATCH_SIZE, ...opts }: { maxSamples?: number } & FetchOptions = {},
 ): Promise<ElevationResult> {
   const sampled = downsample(coords, maxSamples);
   if (sampled.length === 0) return { points: [], gain: 0, loss: 0 };

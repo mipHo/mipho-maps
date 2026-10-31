@@ -10,6 +10,36 @@ const LABEL_BG = 'rgba(28,28,28,0.9)';
 export const CURSOR_COLOR = '#ffc107';
 
 /**
+ * A round tick step (m × 10^n, m from `multipliers`) giving roughly `target` intervals over `range`.
+ */
+export function niceStep(range: number, target: number, multipliers = [1, 2, 2.5, 5]): number {
+  if (!(range > 0)) return 1;
+  const raw = range / target;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const m = multipliers.find((k) => raw <= k * mag * 1.0000001);
+  return (m ?? 10) * mag;
+}
+
+/** Multiples of `step` within [min, max], free of float drift (0.30000000000000004 → 0.3). */
+export function ticks(min: number, max: number, step: number): number[] {
+  const out: number[] = [];
+  const first = Math.ceil(min / step - 1e-9);
+  for (let k = first; k * step <= max + step * 1e-9; k++) {
+    out.push(Number((k * step).toPrecision(12)));
+  }
+  return out;
+}
+
+/** Fewest decimals (0–3) that show every multiple of `step` exactly: 1 → 0, 0.5 → 1, 0.25 → 2, 25 → 0. */
+export function decimalsFor(step: number): number {
+  for (let d = 0; d < 3; d++) {
+    const scaled = step * 10 ** d;
+    if (Math.abs(scaled - Math.round(scaled)) < 1e-9) return d;
+  }
+  return 3;
+}
+
+/**
  * Route distance (metres) under canvas-relative x (CSS px), clamped to the plotted range.
  * Null if there's nothing plotted.
  */
@@ -68,44 +98,49 @@ export function renderProfile(
   const scaleY = (elev: number) =>
     PADDING.top + plotH - ((elev - (minElev - elevPad)) / (elevRange + 2 * elevPad)) * plotH;
 
-  // Grid lines
   ctx.strokeStyle = GRID_COLOR;
   ctx.lineWidth = 1;
-  const yTicks = 5;
-  for (let i = 0; i <= yTicks; i++) {
-    const elev = minElev - elevPad + ((elevRange + 2 * elevPad) * i) / yTicks;
+  ctx.fillStyle = TEXT_COLOR;
+  ctx.font = '11px sans-serif';
+
+  // Y axis: whole-metre round ticks ("120 m"), labels right-aligned in the left padding.
+  const yStep = Math.max(1, niceStep(elevRange + 2 * elevPad, 4, [1, 2, 5]));
+  ctx.textAlign = 'right';
+  for (const elev of ticks(minElev - elevPad, maxElev + elevPad, yStep)) {
     const y = scaleY(elev);
     ctx.beginPath();
     ctx.moveTo(PADDING.left, y);
     ctx.lineTo(w - PADDING.right, y);
     ctx.stroke();
-
-    ctx.fillStyle = TEXT_COLOR;
-    ctx.font = '11px sans-serif';
-    ctx.textAlign = 'right';
-    ctx.fillText(`${Math.round(elev)}m`, PADDING.left - 5, y + 4);
+    ctx.fillText(`${Math.round(elev)} m`, PADDING.left - 5, y + 4);
   }
 
-  const xTicks = 4;
-  for (let i = 0; i <= xTicks; i++) {
-    const dist = (maxDist * i) / xTicks;
+  // X axis: round distances; metres for short routes, km otherwise. Unit only on the last label.
+  const useKm = maxDist >= 1000;
+  const unitScale = useKm ? 1000 : 1;
+  const xStep = niceStep(maxDist / unitScale, Math.max(2, Math.floor(plotW / 70))) * unitScale;
+  const decimals = decimalsFor(xStep / unitScale);
+  const xValues = ticks(0, maxDist, xStep);
+  const labelY = h - PADDING.bottom + 15;
+  let prevRight = -Infinity;
+  xValues.forEach((dist, i) => {
     const x = scaleX(dist);
     ctx.beginPath();
     ctx.moveTo(x, PADDING.top);
     ctx.lineTo(x, h - PADDING.bottom);
     ctx.stroke();
 
-    ctx.fillStyle = TEXT_COLOR;
-    ctx.font = '11px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(`${(dist / 1000).toFixed(1)}`, x, h - PADDING.bottom + 15);
-  }
-
-  // km label
-  ctx.fillStyle = TEXT_COLOR;
-  ctx.font = '11px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('km', w - PADDING.right + 5, h - PADDING.bottom + 15);
+    const isLast = i === xValues.length - 1;
+    const label = (dist / unitScale).toFixed(decimals) + (isLast ? (useKm ? ' km' : ' m') : '');
+    const width = ctx.measureText(label).width;
+    // Centre under the tick, but keep inside the canvas and don't overlap the previous label.
+    let left = Math.min(x - width / 2, w - 2 - width);
+    left = Math.max(left, 2);
+    if (left < prevRight + 6) return;
+    ctx.textAlign = 'left';
+    ctx.fillText(label, left, labelY);
+    prevRight = left + width;
+  });
 
   // Filled area
   ctx.beginPath();

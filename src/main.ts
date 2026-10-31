@@ -1,5 +1,5 @@
 const L = (window as any).L;
-import { createRoutingControl, addWaypoint, undoWaypoint, clearWaypoints, getWaypointCount, type RouteResult } from './router';
+import { createRoutingControl, addWaypoint, undoWaypoint, clearWaypoints, getWaypointCount, setFreehandMode, isFreehandMode, type RouteResult } from './router';
 import { fetchElevation, interpolateElevation, type ElevationPoint, type ElevationResult } from './elevation';
 import { renderProfile, clearProfile } from './profile';
 import { generateGPX, generateKML, downloadFile } from './export';
@@ -22,6 +22,7 @@ let currentRoute: RouteResult | null = null;
 let currentElevation: ElevationResult | null = null;
 let elevationTimeout: ReturnType<typeof setTimeout> | null = null;
 
+const btnFreehand = document.getElementById('btn-freehand') as HTMLButtonElement;
 const btnUndo = document.getElementById('btn-undo') as HTMLButtonElement;
 const btnClear = document.getElementById('btn-clear') as HTMLButtonElement;
 const btnExport = document.getElementById('btn-export') as HTMLButtonElement;
@@ -92,6 +93,11 @@ map.on('click', (e: L.LeafletMouseEvent) => {
 });
 
 // Toolbar buttons
+btnFreehand.addEventListener('click', () => {
+  setFreehandMode(!isFreehandMode());
+  btnFreehand.classList.toggle('active');
+});
+
 btnUndo.addEventListener('click', () => {
   undoWaypoint(control);
   if (getWaypointCount(control) < 2) resetStats();

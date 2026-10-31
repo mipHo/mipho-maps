@@ -40,6 +40,11 @@ html, body, #app {
   -webkit-tap-highlight-color: transparent;
 }
 
+#toolbar button.active {
+  background: #ff9800;
+  color: #fff;
+}
+
 #toolbar button:disabled {
   opacity: 0.4;
   cursor: default;

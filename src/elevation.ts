@@ -65,7 +65,7 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function fetchBatch(points: { point: any; distance: number }[]): Promise<(number | null)[]> {
+async function fetchBatch(points: { point: LatLngLike; distance: number }[]): Promise<(number | null)[]> {
   const locations = points.map((p) => ({
     latitude: p.point.lat,
     longitude: p.point.lng,

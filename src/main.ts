@@ -1,7 +1,7 @@
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { RouteBuilder, type RouteResult } from './router';
-import { fetchElevation, interpolateElevation, type ElevationPoint, type ElevationResult } from './elevation';
+import { fetchElevation, interpolateElevation, type ElevationResult } from './elevation';
 import { renderProfile, clearProfile } from './profile';
 import { generateGPX, generateKML, downloadFile } from './export';
 
@@ -117,25 +117,23 @@ document.addEventListener('click', (e) => {
   }
 });
 
-btnGpx.addEventListener('click', () => {
-  if (!currentRoute) return;
-  const elevations = currentElevation
-    ? interpolateElevation(currentRoute.coordinates, currentElevation.points)
-    : currentRoute.coordinates.map(() => 0);
-  const gpx = generateGPX(currentRoute.coordinates, elevations);
-  downloadFile(gpx, 'route.gpx', 'application/gpx+xml');
-  exportMenu.classList.add('hidden');
-});
+const EXPORT_FORMATS = {
+  gpx: { generate: generateGPX, filename: 'route.gpx', mimeType: 'application/gpx+xml' },
+  kml: { generate: generateKML, filename: 'route.kml', mimeType: 'application/vnd.google-earth.kml+xml' },
+} as const;
 
-btnKml.addEventListener('click', () => {
+function exportRoute(format: keyof typeof EXPORT_FORMATS): void {
+  exportMenu.classList.add('hidden');
   if (!currentRoute) return;
+  const { generate, filename, mimeType } = EXPORT_FORMATS[format];
   const elevations = currentElevation
     ? interpolateElevation(currentRoute.coordinates, currentElevation.points)
     : currentRoute.coordinates.map(() => 0);
-  const kml = generateKML(currentRoute.coordinates, elevations);
-  downloadFile(kml, 'route.kml', 'application/vnd.google-earth.kml+xml');
-  exportMenu.classList.add('hidden');
-});
+  downloadFile(generate(currentRoute.coordinates, elevations), filename, mimeType);
+}
+
+btnGpx.addEventListener('click', () => exportRoute('gpx'));
+btnKml.addEventListener('click', () => exportRoute('kml'));
 
 // Profile collapse toggle
 profileToggle.addEventListener('click', () => {

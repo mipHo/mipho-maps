@@ -1,7 +1,13 @@
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { RouteBuilder, type RouteResult } from './router';
-import { fetchElevation, interpolateElevation, type ElevationPoint, type ElevationResult } from './elevation';
+import {
+  fetchElevation,
+  interpolateElevation,
+  RateLimitError,
+  type ElevationPoint,
+  type ElevationResult,
+} from './elevation';
 import { renderProfile, clearProfile, distanceAtX, CURSOR_COLOR } from './profile';
 import { cumulativeDistances, pointAtDistance } from './geo';
 import { formatDuration, walkingTimeMinutes } from './walking';
@@ -93,30 +99,57 @@ function updateStats(distance: number, gain: number | null, loss: number | null,
 
 /**
  * idle: no route yet · routing: legs still being routed · loading: fetching elevation ·
- * ready: profile matches the route · error: elevation fetch failed.
+ * waiting: rate-limited, retrying soon · ready: profile matches the route · error: fetch failed.
  */
-type ElevationStatus = 'idle' | 'routing' | 'loading' | 'ready' | 'error';
+type ElevationStatus = 'idle' | 'routing' | 'loading' | 'waiting' | 'ready' | 'error';
 
 const STATUS_TEXT: Record<ElevationStatus, string> = {
   idle: 'Add two points to see the elevation profile',
   routing: 'Finding route…',
   loading: 'Loading elevation…',
+  waiting: 'Elevation limit reached — retrying soon',
   ready: '',
   error: 'Elevation unavailable',
 };
 
-function setElevationStatus(status: ElevationStatus): void {
-  const busy = status === 'routing' || status === 'loading';
+/** `text` overrides the default wording for the status. */
+function setElevationStatus(status: ElevationStatus, text = STATUS_TEXT[status]): void {
+  const busy = status === 'routing' || status === 'loading' || status === 'waiting';
   profileContainer.classList.toggle('ready', status === 'ready');
   profileContainer.classList.toggle('loading', busy); // spinner + dimmed chart
   profileContainer.classList.toggle('error', status === 'error');
   profileStatus.classList.toggle('hidden', status === 'ready');
-  profileStatus.textContent = STATUS_TEXT[status];
+  profileStatus.textContent = text;
+}
+
+/** Live "retrying in N s" countdown while a rate-limited elevation request waits. */
+let retryCountdown: ReturnType<typeof setInterval> | null = null;
+
+function startRetryCountdown(waitMs: number): void {
+  stopRetryCountdown();
+  const retryAt = Date.now() + waitMs;
+  const tick = () => {
+    const seconds = Math.ceil((retryAt - Date.now()) / 1000);
+    if (seconds <= 0) {
+      stopRetryCountdown();
+      setElevationStatus('loading');
+    } else {
+      setElevationStatus('waiting', `Elevation limit reached — retrying in ${seconds} s`);
+    }
+  };
+  tick();
+  retryCountdown = setInterval(tick, 1000);
+}
+
+function stopRetryCountdown(): void {
+  if (retryCountdown) clearInterval(retryCountdown);
+  retryCountdown = null;
 }
 
 /** Drops any scheduled or in-flight elevation request; its result will never be applied. */
 function cancelElevation(): void {
   hideHover();
+  stopRetryCountdown();
   if (elevationTimeout) clearTimeout(elevationTimeout);
   elevationTimeout = null;
   elevationAbort?.abort();
@@ -137,8 +170,14 @@ async function loadElevation(result: RouteResult): Promise<void> {
   const abort = new AbortController();
   elevationAbort = abort;
   try {
-    const elev = await fetchElevation(result.coordinates, { signal: abort.signal });
+    const elev = await fetchElevation(result.coordinates, {
+      signal: abort.signal,
+      onRateLimitWait: (waitMs) => {
+        if (!abort.signal.aborted) startRetryCountdown(waitMs);
+      },
+    });
     if (abort.signal.aborted) return; // route changed while we were waiting
+    stopRetryCountdown();
     elevationAbort = null;
     currentElevation = elev;
     routeDistances = cumulativeDistances(result.coordinates);
@@ -148,10 +187,16 @@ async function loadElevation(result: RouteResult): Promise<void> {
     setElevationStatus('ready');
   } catch (err) {
     if (abort.signal.aborted) return;
+    stopRetryCountdown();
     elevationAbort = null;
     console.warn('[maps-mipho] elevation fetch failed', err);
     updateStats(result.totalDistance, null, null, '–');
-    setElevationStatus('error');
+    setElevationStatus(
+      'error',
+      err instanceof RateLimitError
+        ? 'Elevation limit still reached — change the route to try again'
+        : STATUS_TEXT.error,
+    );
   }
 }
 

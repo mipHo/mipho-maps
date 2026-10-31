@@ -34,10 +34,61 @@ function downsample(coords: LatLngLike[], maxPoints: number): { point: LatLngLik
   });
 }
 
+/** The free API answered 429: too many requests in the last minute. */
+export class RateLimitError extends Error {
+  constructor() {
+    super('Elevation API rate limit reached');
+    this.name = 'RateLimitError';
+  }
+}
+
+/**
+ * Waits after a 429. Open-Meteo's limits are per minute, and it doesn't expose Retry-After to
+ * browsers (no Access-Control-Expose-Headers), so the wait is fixed.
+ */
+export const RATE_LIMIT_RETRY_MS = 60_000;
+export const RATE_LIMIT_MAX_RETRIES = 3;
+
+/** Resolves after `ms`, or rejects with an AbortError as soon as `signal` aborts. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException('Aborted', 'AbortError'));
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+interface FetchOptions {
+  signal?: AbortSignal;
+  /** Called when a rate-limited request will be retried in `waitMs` (attempt is 1-based). */
+  onRateLimitWait?: (waitMs: number, attempt: number) => void;
+}
+
+/** fetchBatch, retrying after a 429 up to RATE_LIMIT_MAX_RETRIES times. */
+async function fetchBatchWithRetry(points: LatLngLike[], opts: FetchOptions): Promise<(number | null)[]> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fetchBatch(points, opts.signal);
+    } catch (err) {
+      if (!(err instanceof RateLimitError) || attempt > RATE_LIMIT_MAX_RETRIES) throw err;
+      opts.onRateLimitWait?.(RATE_LIMIT_RETRY_MS, attempt);
+      await sleep(RATE_LIMIT_RETRY_MS, opts.signal);
+    }
+  }
+}
+
 async function fetchBatch(points: LatLngLike[], signal?: AbortSignal): Promise<(number | null)[]> {
   const latitude = points.map((p) => p.lat.toFixed(5)).join(',');
   const longitude = points.map((p) => p.lng.toFixed(5)).join(',');
   const res = await fetch(`${ELEVATION_URL}?latitude=${latitude}&longitude=${longitude}`, { signal });
+  if (res.status === 429) throw new RateLimitError();
 
   const data = await res.json().catch(() => null);
   if (!res.ok || !Array.isArray(data?.elevation)) {
@@ -116,16 +167,33 @@ export function fillGaps(values: (number | null)[]): number[] {
 
 export async function fetchElevation(
   coords: LatLngLike[],
-  { maxSamples = 200, signal }: { maxSamples?: number; signal?: AbortSignal } = {},
+  { maxSamples = 200, ...opts }: { maxSamples?: number } & FetchOptions = {},
 ): Promise<ElevationResult> {
   const sampled = downsample(coords, maxSamples);
   if (sampled.length === 0) return { points: [], gain: 0, loss: 0 };
 
-  const batches: Promise<(number | null)[]>[] = [];
-  for (let i = 0; i < sampled.length; i += BATCH_SIZE) {
-    batches.push(fetchBatch(sampled.slice(i, i + BATCH_SIZE).map((s) => s.point), signal));
+  // Batches run in parallel; each one retries on its own after a rate limit. If one fails for
+  // good, the others are cancelled so none of them keeps waiting/retrying for nothing.
+  const local = new AbortController();
+  const onOuterAbort = () => local.abort();
+  opts.signal?.addEventListener('abort', onOuterAbort, { once: true });
+  if (opts.signal?.aborted) local.abort();
+
+  let results: (number | null)[][];
+  try {
+    const batches: Promise<(number | null)[]>[] = [];
+    for (let i = 0; i < sampled.length; i += BATCH_SIZE) {
+      const points = sampled.slice(i, i + BATCH_SIZE).map((s) => s.point);
+      batches.push(fetchBatchWithRetry(points, { ...opts, signal: local.signal }));
+    }
+    results = await Promise.all(batches);
+  } catch (err) {
+    local.abort();
+    throw err;
+  } finally {
+    opts.signal?.removeEventListener('abort', onOuterAbort);
   }
-  const elevations = fillGaps((await Promise.all(batches)).flat());
+  const elevations = fillGaps(results.flat());
 
   const points: ElevationPoint[] = sampled.map((s, i) => ({
     lat: s.point.lat,

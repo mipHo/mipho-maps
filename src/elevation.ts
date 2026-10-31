@@ -1,4 +1,4 @@
-const L = (window as any).L;
+import type { LatLngLike } from './geo';
 
 export interface ElevationPoint {
   lat: number;
@@ -13,7 +13,7 @@ export interface ElevationResult {
   loss: number;
 }
 
-function haversineDistance(a: L.LatLng, b: L.LatLng): number {
+function haversineDistance(a: LatLngLike, b: LatLngLike): number {
   const R = 6371000;
   const toRad = (deg: number) => (deg * Math.PI) / 180;
   const dLat = toRad(b.lat - a.lat);
@@ -24,7 +24,7 @@ function haversineDistance(a: L.LatLng, b: L.LatLng): number {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
-function downsample(coords: L.LatLng[], maxPoints: number): { point: L.LatLng; distance: number }[] {
+function downsample(coords: LatLngLike[], maxPoints: number): { point: LatLngLike; distance: number }[] {
   if (coords.length === 0) return [];
 
   const distances: number[] = [0];
@@ -37,7 +37,7 @@ function downsample(coords: L.LatLng[], maxPoints: number): { point: L.LatLng; d
 
   const count = Math.min(maxPoints, coords.length);
   const interval = totalDist / (count - 1);
-  const sampled: { point: L.LatLng; distance: number }[] = [];
+  const sampled: { point: LatLngLike; distance: number }[] = [];
 
   let coordIdx = 0;
   for (let i = 0; i < count; i++) {
@@ -54,7 +54,7 @@ function downsample(coords: L.LatLng[], maxPoints: number): { point: L.LatLng; d
           : (targetDist - distances[coordIdx]) / (distances[coordIdx + 1] - distances[coordIdx]);
       const lat = coords[coordIdx].lat + segFraction * (coords[coordIdx + 1].lat - coords[coordIdx].lat);
       const lng = coords[coordIdx].lng + segFraction * (coords[coordIdx + 1].lng - coords[coordIdx].lng);
-      sampled.push({ point: L.latLng(lat, lng), distance: targetDist });
+      sampled.push({ point: { lat, lng }, distance: targetDist });
     }
   }
 
@@ -93,7 +93,7 @@ function computeGainLoss(elevations: number[], threshold = 2): { gain: number; l
   return { gain, loss };
 }
 
-export async function fetchElevation(coords: L.LatLng[], maxSamples = 200): Promise<ElevationResult> {
+export async function fetchElevation(coords: LatLngLike[], maxSamples = 200): Promise<ElevationResult> {
   const sampled = downsample(coords, maxSamples);
   if (sampled.length === 0) return { points: [], gain: 0, loss: 0 };
 
@@ -121,7 +121,7 @@ export async function fetchElevation(coords: L.LatLng[], maxSamples = 200): Prom
 }
 
 export function interpolateElevation(
-  coords: L.LatLng[],
+  coords: LatLngLike[],
   profile: ElevationPoint[],
 ): number[] {
   if (profile.length === 0) return coords.map(() => 0);

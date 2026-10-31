@@ -1,10 +1,10 @@
-const L = (window as any).L;
+import type { LatLngLike } from './geo';
 
 function escapeXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-export function generateGPX(coords: L.LatLng[], elevations: number[], name = 'Walking Route'): string {
+export function generateGPX(coords: LatLngLike[], elevations: number[], name = 'Walking Route'): string {
   const now = new Date().toISOString();
   const trkpts = coords
     .map((c, i) => {
@@ -28,7 +28,7 @@ ${trkpts}
 </gpx>`;
 }
 
-export function generateKML(coords: L.LatLng[], elevations: number[], name = 'Walking Route'): string {
+export function generateKML(coords: LatLngLike[], elevations: number[], name = 'Walking Route'): string {
   const coordStr = coords
     .map((c, i) => {
       const ele = elevations[i] != null ? elevations[i].toFixed(1) : '0';

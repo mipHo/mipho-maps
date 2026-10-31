@@ -1,13 +1,9 @@
-const L = (window as any).L;
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import { createRoutingControl, addWaypoint, undoWaypoint, clearWaypoints, getWaypointCount, setFreehandMode, isFreehandMode, type RouteResult } from './router';
 import { fetchElevation, interpolateElevation, type ElevationPoint, type ElevationResult } from './elevation';
 import { renderProfile, clearProfile } from './profile';
 import { generateGPX, generateKML, downloadFile } from './export';
-
-console.log('[maps-mipho] L:', L);
-console.log('[maps-mipho] L.Routing:', L?.Routing);
-console.log('[maps-mipho] L.Routing.control:', L?.Routing?.control);
-console.log('[maps-mipho] L.Routing.osrmv1:', L?.Routing?.osrmv1);
 
 const map = L.map('map', { zoomControl: false }).setView([-39.81, -73.24], 13);
 

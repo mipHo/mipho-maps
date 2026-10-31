@@ -1,4 +1,7 @@
-const L = (window as any).L;
+// leaflet-setup must run first: leaflet-routing-machine attaches itself to window.L on load.
+// Both go away in step 2, when OSRM is called directly.
+import L from './leaflet-setup';
+import 'leaflet-routing-machine';
 
 export interface RouteResult {
   coordinates: any[];

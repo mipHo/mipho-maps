@@ -89,10 +89,6 @@ html, body, #app {
   z-index: 0;
 }
 
-.leaflet-routing-container {
-  display: none !important;
-}
-
 #stats {
   flex-shrink: 0;
   position: relative;

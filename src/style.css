@@ -168,6 +168,12 @@ body {
   color: var(--text-disabled);
 }
 
+#map .locate-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 #map .leaflet-control-attribution {
   background: rgba(28, 28, 28, 0.8);
   color: var(--text-muted);

@@ -12,9 +12,14 @@ import { renderProfile, clearProfile, distanceAtX, CURSOR_COLOR } from './profil
 import { cumulativeDistances, pointAtDistance } from './geo';
 import { formatDuration, walkingTimeMinutes } from './walking';
 import { MapMessages, routingErrorMessage } from './messages';
+import { UserLocation } from './location';
 import { generateGPX, generateKML, downloadFile } from './export';
 
-const map = L.map('map', { zoomControl: false }).setView([-39.81, -73.24], 13);
+/** Used until (and unless) the user's location is known. */
+const DEFAULT_VIEW = { center: L.latLng(-39.81, -73.24), zoom: 13 }; // Valdivia
+const LOCATED_ZOOM = 15;
+
+const map = L.map('map', { zoomControl: false }).setView(DEFAULT_VIEW.center, DEFAULT_VIEW.zoom);
 
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '&copy; OpenStreetMap contributors',
@@ -230,6 +235,61 @@ const messages = new MapMessages(map);
 const route = new RouteBuilder(map, onRouteFound, (err) => messages.showToast(routingErrorMessage(err)));
 updateControls();
 setElevationStatus('idle');
+
+// ---- User location ----
+
+// Once the user pans/zooms or starts a route, a late location fix must not yank the map away.
+let userMovedMap = false;
+map.on('dragstart zoomstart', () => {
+  userMovedMap = true;
+});
+
+const userLocation = new UserLocation(map, {
+  onFirstFix: (latlng) => {
+    if (userMovedMap || route.waypointCount > 0) return;
+    map.setView(latlng, LOCATED_ZOOM);
+  },
+});
+userLocation.start();
+
+function locateMe(): void {
+  switch (userLocation.state) {
+    case 'active':
+      map.setView(userLocation.position!, Math.max(map.getZoom(), LOCATED_ZOOM));
+      break;
+    case 'waiting':
+      messages.showToast('Still finding your location…');
+      break;
+    case 'denied':
+      messages.showToast("Location access is blocked. Allow it in your browser's site settings to see where you are.");
+      break;
+    case 'unsupported':
+      messages.showToast("Location isn't available in this browser.");
+      break;
+  }
+}
+
+const LocateControl = L.Control.extend({
+  onAdd(): HTMLElement {
+    const bar = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+    const btn = L.DomUtil.create('a', 'locate-btn', bar);
+    btn.href = '#';
+    btn.title = 'Show my location';
+    btn.setAttribute('role', 'button');
+    btn.setAttribute('aria-label', 'Show my location');
+    btn.innerHTML =
+      '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
+      '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/>' +
+      '<path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>';
+    L.DomEvent.disableClickPropagation(bar); // don't add a waypoint under the button
+    L.DomEvent.on(btn, 'click', (e) => {
+      L.DomEvent.preventDefault(e);
+      locateMe();
+    });
+    return bar;
+  },
+});
+new LocateControl({ position: 'topright' }).addTo(map);
 
 // Map tap to add waypoint
 map.on('click', (e: L.LeafletMouseEvent) => {

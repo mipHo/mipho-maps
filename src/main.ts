@@ -2,7 +2,8 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { RouteBuilder, type RouteResult } from './router';
 import { fetchElevation, interpolateElevation, type ElevationPoint, type ElevationResult } from './elevation';
-import { renderProfile, clearProfile } from './profile';
+import { renderProfile, clearProfile, distanceAtX, CURSOR_COLOR } from './profile';
+import { cumulativeDistances, pointAtDistance } from './geo';
 import { generateGPX, generateKML, downloadFile } from './export';
 
 const map = L.map('map', { zoomControl: false }).setView([-39.81, -73.24], 13);
@@ -14,6 +15,16 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 
 L.control.zoom({ position: 'topright' }).addTo(map);
 
+/** Map marker that follows the cursor on the elevation profile. */
+const hoverMarker = L.circleMarker([0, 0], {
+  radius: 7,
+  color: '#1a1a2e',
+  weight: 2,
+  fillColor: CURSOR_COLOR,
+  fillOpacity: 1,
+  interactive: false,
+});
+
 const ELEVATION_DEBOUNCE_MS = 500;
 
 let currentRoute: RouteResult | null = null;
@@ -21,6 +32,8 @@ let currentRoute: RouteResult | null = null;
 let currentElevation: ElevationResult | null = null;
 /** Last profile drawn; kept (dimmed) while a newer one loads so the panel doesn't jump. */
 let shownProfile: ElevationPoint[] = [];
+/** Cumulative distances along currentRoute.coordinates; set together with currentElevation. */
+let routeDistances: number[] = [];
 let elevationTimeout: ReturnType<typeof setTimeout> | null = null;
 let elevationAbort: AbortController | null = null;
 let pendingLegs = 0;
@@ -47,11 +60,11 @@ function updateButtons(): void {
   btnExport.disabled = currentRoute === null || pendingLegs > 0;
 }
 
-/** gain/loss null = not known yet (shown as "…"). */
-function updateStats(distance: number, gain: number | null, loss: number | null): void {
+/** gain/loss null = not known (shown as `unknown`: "…" while loading, "–" after a failure). */
+function updateStats(distance: number, gain: number | null, loss: number | null, unknown = '…'): void {
   statDistance.textContent = `${(distance / 1000).toFixed(1)} km`;
-  statGain.textContent = gain === null ? '+…' : `+${Math.round(gain)}m`;
-  statLoss.textContent = loss === null ? '-…' : `-${Math.round(loss)}m`;
+  statGain.textContent = gain === null ? `+${unknown}` : `+${Math.round(gain)}m`;
+  statLoss.textContent = loss === null ? `-${unknown}` : `-${Math.round(loss)}m`;
   statGain.classList.toggle('loading', gain === null);
   statLoss.classList.toggle('loading', loss === null);
 }
@@ -59,6 +72,7 @@ function updateStats(distance: number, gain: number | null, loss: number | null)
 type ElevationStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 function setElevationStatus(status: ElevationStatus): void {
+  profileContainer.classList.toggle('ready', status === 'ready');
   profileContainer.classList.toggle('loading', status === 'loading');
   profileContainer.classList.toggle('error', status === 'error');
   profileStatus.classList.toggle('hidden', status !== 'loading' && status !== 'error');
@@ -68,6 +82,7 @@ function setElevationStatus(status: ElevationStatus): void {
 
 /** Drops any scheduled or in-flight elevation request; its result will never be applied. */
 function cancelElevation(): void {
+  hideHover();
   if (elevationTimeout) clearTimeout(elevationTimeout);
   elevationTimeout = null;
   elevationAbort?.abort();
@@ -92,6 +107,7 @@ async function loadElevation(result: RouteResult): Promise<void> {
     if (abort.signal.aborted) return; // route changed while we were waiting
     elevationAbort = null;
     currentElevation = elev;
+    routeDistances = cumulativeDistances(result.coordinates);
     shownProfile = elev.points;
     updateStats(result.totalDistance, elev.gain, elev.loss);
     renderProfile(profileCanvas, shownProfile);
@@ -100,7 +116,7 @@ async function loadElevation(result: RouteResult): Promise<void> {
     if (abort.signal.aborted) return;
     elevationAbort = null;
     console.warn('[maps-mipho] elevation fetch failed', err);
-    updateStats(result.totalDistance, 0, 0);
+    updateStats(result.totalDistance, null, null, '–');
     setElevationStatus('error');
   }
 }
@@ -193,3 +209,25 @@ function redrawProfile(): void {
 }
 
 window.addEventListener('resize', redrawProfile);
+
+// Hovering / touching the profile shows the matching point on the map.
+function showHover(e: PointerEvent): void {
+  // Only for a profile that matches the current route (not the dimmed one shown while loading).
+  if (!currentElevation || !currentRoute) return;
+  const d = distanceAtX(profileCanvas, currentElevation.points, e.offsetX);
+  if (d === null) return;
+  hoverMarker.setLatLng(pointAtDistance(currentRoute.coordinates, routeDistances, d));
+  if (!map.hasLayer(hoverMarker)) hoverMarker.addTo(map);
+  renderProfile(profileCanvas, currentElevation.points, d);
+}
+
+function hideHover(): void {
+  if (!map.hasLayer(hoverMarker)) return;
+  hoverMarker.remove();
+  redrawProfile();
+}
+
+profileCanvas.addEventListener('pointerdown', showHover);
+profileCanvas.addEventListener('pointermove', showHover);
+profileCanvas.addEventListener('pointerleave', hideHover);
+profileCanvas.addEventListener('pointercancel', hideHover);

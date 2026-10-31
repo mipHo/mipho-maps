@@ -139,6 +139,12 @@ html, body, #app {
   height: 150px;
   display: block;
   transition: opacity 0.2s ease;
+  /* Let a finger drag along the profile instead of being taken as a page gesture. */
+  touch-action: none;
+}
+
+#profile-container.ready #profile-canvas {
+  cursor: crosshair;
 }
 
 /* Elevation loading / error overlay, covering the canvas only. */

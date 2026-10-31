@@ -4,6 +4,7 @@ import { RouteBuilder, type RouteResult } from './router';
 import { fetchElevation, interpolateElevation, type ElevationPoint, type ElevationResult } from './elevation';
 import { renderProfile, clearProfile, distanceAtX, CURSOR_COLOR } from './profile';
 import { cumulativeDistances, pointAtDistance } from './geo';
+import { formatDuration, walkingTimeMinutes } from './walking';
 import { generateGPX, generateKML, downloadFile } from './export';
 
 const map = L.map('map', { zoomControl: false }).setView([-39.81, -73.24], 13);
@@ -48,6 +49,7 @@ const exportMenu = document.getElementById('export-menu')!;
 const statDistance = document.getElementById('stat-distance')!;
 const statGain = document.getElementById('stat-gain')!;
 const statLoss = document.getElementById('stat-loss')!;
+const statTime = document.getElementById('stat-time')!;
 const profileCanvas = document.getElementById('profile-canvas') as HTMLCanvasElement;
 const profileToggle = document.getElementById('profile-toggle')!;
 const profileContainer = document.getElementById('profile-container')!;
@@ -63,10 +65,18 @@ function updateButtons(): void {
 /** gain/loss null = not known (shown as `unknown`: "…" while loading, "–" after a failure). */
 function updateStats(distance: number, gain: number | null, loss: number | null, unknown = '…'): void {
   statDistance.textContent = `${(distance / 1000).toFixed(1)} km`;
-  statGain.textContent = gain === null ? `+${unknown}` : `+${Math.round(gain)}m`;
-  statLoss.textContent = loss === null ? `-${unknown}` : `-${Math.round(loss)}m`;
+  statGain.textContent = gain === null ? `+${unknown}` : `+${Math.round(gain)} m`;
+  statLoss.textContent = loss === null ? `-${unknown}` : `-${Math.round(loss)} m`;
+
+  // Walking time needs the ascent. While loading: "…". If elevation failed: the flat-ground
+  // estimate, marked "≥" because any climb only adds time.
+  if (gain !== null) statTime.textContent = formatDuration(walkingTimeMinutes(distance, gain));
+  else if (unknown === '…') statTime.textContent = '…';
+  else statTime.textContent = `≥ ${formatDuration(walkingTimeMinutes(distance, 0))}`;
+
   statGain.classList.toggle('loading', gain === null);
   statLoss.classList.toggle('loading', loss === null);
+  statTime.classList.toggle('loading', gain === null);
 }
 
 type ElevationStatus = 'idle' | 'loading' | 'ready' | 'error';

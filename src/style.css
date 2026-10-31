@@ -177,21 +177,44 @@ body {
   color: var(--accent-soft);
 }
 
-/* ---- Stats bar ---- */
+/* ---- Elevation panel: stats column + chart ---- */
 
-#stats {
-  flex-shrink: 0;
-  position: relative;
-  z-index: 1;
+#profile-body {
   display: flex;
+}
+
+/* Stats column, left of the chart. Same height as the chart. */
+#stats {
+  flex: 0 0 auto;
+  width: 120px; /* fits "≥ 12 h 45 min" */
+  height: 150px;
+  display: flex;
+  flex-direction: column;
   justify-content: space-around;
-  align-items: center;
-  padding: 10px;
-  background: var(--bg);
-  border-top: 1px solid var(--border);
+  padding: 4px 0 4px 12px;
+  border-right: 1px solid var(--border);
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.stat dt {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.stat dd {
   color: var(--text);
   font-size: 15px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 #stat-gain {
@@ -206,6 +229,26 @@ body {
   opacity: 0.5;
 }
 
+/* Collapsed: chart hidden, stats become one compact row so they stay visible. */
+#profile-container.collapsed #stats {
+  width: 100%;
+  height: auto;
+  flex-direction: row;
+  justify-content: space-around;
+  padding: 0 12px 10px;
+  border-right: none;
+}
+
+#profile-chart {
+  flex: 1 1 0%;
+  min-width: 0;
+  position: relative;
+}
+
+#profile-container.collapsed #profile-chart {
+  display: none;
+}
+
 /* ---- Elevation profile ---- */
 
 #profile-container {
@@ -216,10 +259,6 @@ body {
   border-top: 1px solid var(--border);
   transition: height 0.3s ease;
   overflow: hidden;
-}
-
-#profile-container.collapsed #profile-canvas {
-  display: none;
 }
 
 #profile-toggle {
@@ -245,13 +284,10 @@ body {
   cursor: crosshair;
 }
 
-/* Elevation loading / error overlay, covering the canvas only. */
+/* Elevation loading / error overlay, covering the chart only (not the stats). */
 #profile-status {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 150px;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -259,10 +295,6 @@ body {
   color: var(--text-muted);
   font-size: 13px;
   pointer-events: none;
-}
-
-#profile-container.collapsed #profile-status {
-  display: none;
 }
 
 #profile-container.loading #profile-canvas,

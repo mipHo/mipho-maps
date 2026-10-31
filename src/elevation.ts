@@ -49,15 +49,69 @@ async function fetchBatch(points: LatLngLike[], signal?: AbortSignal): Promise<(
   return data.elevation.map((e: unknown) => (typeof e === 'number' && Number.isFinite(e) ? e : null));
 }
 
-function computeGainLoss(elevations: number[], threshold = 2): { gain: number; loss: number } {
+/**
+ * Total ascent/descent with hysteresis: a climb or descent counts only once the profile has
+ * reversed by more than `threshold` metres, so DEM noise is ignored but gradual slopes
+ * (many small steps) are counted in full. gain − loss equals end − start to within 2 × `threshold`
+ * (an uncounted sub-threshold drift is possible at each end of the route).
+ */
+export function computeGainLoss(elevations: number[], threshold = 3): { gain: number; loss: number } {
   let gain = 0;
   let loss = 0;
+  if (elevations.length < 2) return { gain, loss };
+
+  // Before a direction is established, track both extremes so the true start of the first
+  // climb/descent is used, not just the first sample.
+  let lo = elevations[0];
+  let hi = elevations[0];
+  let dir = 0; // +1 climbing, -1 descending, 0 not yet known
+  let anchor = 0; // elevation where the current climb/descent started
+  let extreme = 0; // highest point of the current climb / lowest of the current descent
+
   for (let i = 1; i < elevations.length; i++) {
-    const diff = elevations[i] - elevations[i - 1];
-    if (diff > threshold) gain += diff;
-    else if (diff < -threshold) loss += Math.abs(diff);
+    const e = elevations[i];
+    if (dir === 0) {
+      lo = Math.min(lo, e);
+      hi = Math.max(hi, e);
+      if (e - lo > threshold) { dir = 1; anchor = lo; extreme = e; }
+      else if (hi - e > threshold) { dir = -1; anchor = hi; extreme = e; }
+    } else if (dir === 1) {
+      if (e > extreme) extreme = e;
+      else if (extreme - e > threshold) {
+        gain += extreme - anchor;
+        anchor = extreme; dir = -1; extreme = e;
+      }
+    } else {
+      if (e < extreme) extreme = e;
+      else if (e - extreme > threshold) {
+        loss += anchor - extreme;
+        anchor = extreme; dir = 1; extreme = e;
+      }
+    }
   }
+
+  // Close the last climb/descent.
+  if (dir === 1) gain += extreme - anchor;
+  else if (dir === -1) loss += anchor - extreme;
   return { gain, loss };
+}
+
+/**
+ * Replaces missing values by linear interpolation between the nearest known neighbours
+ * (or the nearest one, at the ends). Throws if nothing is known.
+ */
+export function fillGaps(values: (number | null)[]): number[] {
+  const known = values.flatMap((v, i) => (v === null ? [] : [i]));
+  if (known.length === 0) throw new Error('Elevation API returned no data for this route');
+  return values.map((v, i) => {
+    if (v !== null) return v;
+    const after = known.find((k) => k > i);
+    const before = [...known].reverse().find((k) => k < i);
+    if (before === undefined) return values[after!]!;
+    if (after === undefined) return values[before]!;
+    const t = (i - before) / (after - before);
+    return values[before]! + t * (values[after]! - values[before]!);
+  });
 }
 
 export async function fetchElevation(
@@ -71,12 +125,12 @@ export async function fetchElevation(
   for (let i = 0; i < sampled.length; i += BATCH_SIZE) {
     batches.push(fetchBatch(sampled.slice(i, i + BATCH_SIZE).map((s) => s.point), signal));
   }
-  const elevations = (await Promise.all(batches)).flat();
+  const elevations = fillGaps((await Promise.all(batches)).flat());
 
   const points: ElevationPoint[] = sampled.map((s, i) => ({
     lat: s.point.lat,
     lng: s.point.lng,
-    elevation: elevations[i] ?? 0,
+    elevation: elevations[i],
     distance: s.distance,
   }));
 

@@ -4,7 +4,9 @@ const PADDING = { top: 15, right: 15, bottom: 30, left: 45 };
 const GRID_COLOR = 'rgba(255,255,255,0.1)';
 const LINE_COLOR = '#2196f3';
 const FILL_COLOR = 'rgba(33,150,243,0.25)';
-const TEXT_COLOR = '#aaa';
+// Mirror the theme variables in style.css (canvas can't use CSS vars directly).
+const TEXT_COLOR = '#a0a0a0';
+const LABEL_BG = 'rgba(28,28,28,0.9)';
 export const CURSOR_COLOR = '#ffc107';
 
 /**
@@ -151,7 +153,7 @@ export function renderProfile(
     const labelW = ctx.measureText(label).width + 10;
     const flip = x + 6 + labelW > w - PADDING.right;
     const lx = flip ? x - 6 - labelW : x + 6;
-    ctx.fillStyle = 'rgba(26,26,46,0.9)';
+    ctx.fillStyle = LABEL_BG;
     ctx.fillRect(lx, PADDING.top, labelW, 18);
     ctx.fillStyle = CURSOR_COLOR;
     ctx.textAlign = 'left';

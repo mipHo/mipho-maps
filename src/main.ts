@@ -18,7 +18,7 @@ L.control.zoom({ position: 'topright' }).addTo(map);
 /** Map marker that follows the cursor on the elevation profile. */
 const hoverMarker = L.circleMarker([0, 0], {
   radius: 7,
-  color: '#1a1a2e',
+  color: '#1c1c1c',
   weight: 2,
   fillColor: CURSOR_COLOR,
   fillOpacity: 1,

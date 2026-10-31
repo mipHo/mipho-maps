@@ -177,6 +177,70 @@ body {
   color: var(--accent-soft);
 }
 
+/* ---- Messages over the map (hint + toast), bottom centre ---- */
+
+.map-messages {
+  position: absolute;
+  left: 50%;
+  bottom: 28px; /* clear the attribution */
+  transform: translateX(-50%);
+  z-index: 1000; /* above Leaflet panes, level with controls */
+  width: max-content;
+  max-width: calc(100% - 24px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none; /* map stays tappable around/through the hint */
+  font-family: inherit;
+}
+
+.map-hint,
+.map-toast {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.map-hint {
+  padding: 7px 14px;
+  background: rgba(43, 43, 43, 0.92);
+  color: var(--text);
+}
+
+.map-toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 6px 8px 14px;
+  border-radius: 12px;
+  border-color: var(--loss);
+  background: var(--surface);
+  color: var(--text);
+  pointer-events: auto;
+}
+
+.map-toast-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.map-toast-close:hover,
+.map-toast-close:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
 /* ---- Elevation panel: stats column + chart ---- */
 
 #profile-body {

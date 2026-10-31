@@ -5,6 +5,7 @@ import { fetchElevation, interpolateElevation, type ElevationPoint, type Elevati
 import { renderProfile, clearProfile, distanceAtX, CURSOR_COLOR } from './profile';
 import { cumulativeDistances, pointAtDistance } from './geo';
 import { formatDuration, walkingTimeMinutes } from './walking';
+import { MapMessages, routingErrorMessage } from './messages';
 import { generateGPX, generateKML, downloadFile } from './export';
 
 const map = L.map('map', { zoomControl: false }).setView([-39.81, -73.24], 13);
@@ -55,11 +56,22 @@ const profileToggle = document.getElementById('profile-toggle')!;
 const profileContainer = document.getElementById('profile-container')!;
 const profileStatus = document.getElementById('profile-status')!;
 
-function updateButtons(): void {
+/** Toolbar buttons and the map hint, from the current waypoint count / route state. */
+function updateControls(): void {
   const count = route.waypointCount;
   btnUndo.disabled = count === 0;
   btnClear.disabled = count === 0;
   btnExport.disabled = currentRoute === null || pendingLegs > 0;
+
+  messages.setHint(
+    count === 0
+      ? 'Tap the map to set a start point'
+      : count === 1
+        ? route.mode === 'freehand'
+          ? 'Tap again to draw a straight line to the next point'
+          : 'Tap again to route to the next point'
+        : null,
+  );
 }
 
 /** gain/loss null = not known (shown as `unknown`: "…" while loading, "–" after a failure). */
@@ -79,15 +91,27 @@ function updateStats(distance: number, gain: number | null, loss: number | null,
   statTime.classList.toggle('loading', gain === null);
 }
 
-type ElevationStatus = 'idle' | 'loading' | 'ready' | 'error';
+/**
+ * idle: no route yet · routing: legs still being routed · loading: fetching elevation ·
+ * ready: profile matches the route · error: elevation fetch failed.
+ */
+type ElevationStatus = 'idle' | 'routing' | 'loading' | 'ready' | 'error';
+
+const STATUS_TEXT: Record<ElevationStatus, string> = {
+  idle: 'Add two points to see the elevation profile',
+  routing: 'Finding route…',
+  loading: 'Loading elevation…',
+  ready: '',
+  error: 'Elevation unavailable',
+};
 
 function setElevationStatus(status: ElevationStatus): void {
+  const busy = status === 'routing' || status === 'loading';
   profileContainer.classList.toggle('ready', status === 'ready');
-  profileContainer.classList.toggle('loading', status === 'loading');
+  profileContainer.classList.toggle('loading', busy); // spinner + dimmed chart
   profileContainer.classList.toggle('error', status === 'error');
-  profileStatus.classList.toggle('hidden', status !== 'loading' && status !== 'error');
-  profileStatus.textContent =
-    status === 'loading' ? 'Loading elevation…' : status === 'error' ? 'Elevation unavailable' : '';
+  profileStatus.classList.toggle('hidden', status === 'ready');
+  profileStatus.textContent = STATUS_TEXT[status];
 }
 
 /** Drops any scheduled or in-flight elevation request; its result will never be applied. */
@@ -135,7 +159,9 @@ async function onRouteFound(result: RouteResult | null, pending: number): Promis
   pendingLegs = pending;
   if (!result) {
     resetStats();
-    updateButtons();
+    // e.g. two points with the first leg still being routed
+    if (pending > 0) setElevationStatus('routing');
+    updateControls();
     return;
   }
 
@@ -144,8 +170,8 @@ async function onRouteFound(result: RouteResult | null, pending: number): Promis
   currentRoute = result;
   currentElevation = null;
   updateStats(result.totalDistance, null, null);
-  setElevationStatus('loading');
-  updateButtons();
+  setElevationStatus(pending > 0 ? 'routing' : 'loading');
+  updateControls();
 
   // Only fetch elevation for a complete route, debounced so rapid edits make one request.
   if (pending > 0) return;
@@ -155,28 +181,34 @@ async function onRouteFound(result: RouteResult | null, pending: number): Promis
   }, ELEVATION_DEBOUNCE_MS);
 }
 
-const route = new RouteBuilder(map, onRouteFound);
+const messages = new MapMessages(map);
+const route = new RouteBuilder(map, onRouteFound, (err) => messages.showToast(routingErrorMessage(err)));
+updateControls();
+setElevationStatus('idle');
 
 // Map tap to add waypoint
 map.on('click', (e: L.LeafletMouseEvent) => {
   route.add(e.latlng);
-  updateButtons();
+  updateControls();
 });
 
 // Toolbar buttons
 btnFreehand.addEventListener('click', () => {
   route.mode = route.mode === 'freehand' ? 'snapped' : 'freehand';
   btnFreehand.classList.toggle('active', route.mode === 'freehand');
+  updateControls(); // hint wording depends on the mode
 });
 
 btnUndo.addEventListener('click', () => {
   route.undo();
-  updateButtons();
+  messages.hideToast(); // the toast usually refers to the leg just removed
+  updateControls();
 });
 
 btnClear.addEventListener('click', () => {
   route.clear();
-  updateButtons();
+  messages.hideToast();
+  updateControls();
 });
 
 btnExport.addEventListener('click', () => {

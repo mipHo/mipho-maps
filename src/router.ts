@@ -16,9 +16,13 @@ export interface RouteResult {
  */
 export type RouteListener = (result: RouteResult | null, pending: number) => void;
 
+/** Called when a snapped leg can't be routed; the leg falls back to a straight line. */
+export type LegErrorListener = (error: unknown) => void;
+
 /** The path between two consecutive waypoints. Computed once, when the leg is created. */
 interface Leg {
   mode: LegMode;
+  /** 'error': routing failed and the leg is a straight line (counted in the route, drawn in red). */
   status: 'pending' | 'ok' | 'error';
   coords: LatLngLike[];
   /** Metres. */
@@ -32,6 +36,7 @@ const LEG_STYLES: Record<LegMode, L.PolylineOptions> = {
   snapped: { color: '#2196f3', weight: 5, opacity: 0.8 },
   freehand: { color: '#ff9800', weight: 5, opacity: 0.8, dashArray: '10, 10' },
 };
+const FAILED_LEG_STYLE: L.PolylineOptions = { color: '#ef5350', weight: 4, opacity: 0.9, dashArray: '4, 8' };
 
 const MARKER_COLORS = { start: '#4caf50', end: '#f44336', via: '#2196f3' };
 
@@ -50,6 +55,7 @@ export class RouteBuilder {
   constructor(
     private readonly map: L.Map,
     private readonly onChange: RouteListener,
+    private readonly onLegError: LegErrorListener = () => {},
   ) {
     this.markers = L.layerGroup().addTo(map);
   }
@@ -110,8 +116,10 @@ export class RouteBuilder {
         if (!this.isLive(leg)) return; // includes the AbortError from disposeLeg
         leg.abort = null;
         console.error('[maps-mipho] routing error', err);
-        leg.status = 'error';
+        // Fall back to a straight line so the route has no gap and the export matches the map.
+        this.settleLeg(leg, [from, to], from.distanceTo(to), 'error');
         this.emit();
+        this.onLegError(err);
       },
     );
   }
@@ -120,11 +128,12 @@ export class RouteBuilder {
     return this.legs.includes(leg);
   }
 
-  private settleLeg(leg: Leg, coords: LatLngLike[], distance: number): void {
-    leg.status = 'ok';
+  private settleLeg(leg: Leg, coords: LatLngLike[], distance: number, status: 'ok' | 'error' = 'ok'): void {
+    leg.status = status;
     leg.coords = coords;
     leg.distance = distance;
-    leg.polyline = L.polyline(coords, LEG_STYLES[leg.mode]).addTo(this.map);
+    const style = status === 'error' ? FAILED_LEG_STYLE : LEG_STYLES[leg.mode];
+    leg.polyline = L.polyline(coords, style).addTo(this.map);
   }
 
   /** Cancels any in-flight request and removes the leg's line. Call after removing it from `legs`. */
@@ -158,7 +167,7 @@ export class RouteBuilder {
     });
   }
 
-  /** Concatenates finished legs (pending/failed ones are skipped, as before) and notifies the listener. */
+  /** Concatenates settled legs (failed ones as straight lines; pending ones skipped) and notifies the listener. */
   private emit(): void {
     const coordinates: LatLngLike[] = [];
     let totalDistance = 0;
